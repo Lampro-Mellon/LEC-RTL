@@ -1,4 +1,4 @@
-# Logical Equivalence Check of Quasar RISC-V Core 2.0 from Lampro Mellon
+# Logical Equivalence Check of Quasar RISC-V Core 1.0 from Lampro Mellon
 
 This repository contains the EL2 SweRV Core, Quasar Core design in RTL, and the setup files. To run logical equivalency check (LEC) using Synopsys Formality on the two designs follow these instructions.
 
@@ -7,7 +7,7 @@ This repository contains the EL2 SweRV Core, Quasar Core design in RTL, and the 
     ├── verif
         ├── LEC
         │    ├── LEC_RTL
-        │       ├── BB_RTL                       # Quasar wrapper Black Boxes
+        │       ├── generated_RTL                # Quasar wrapper Black Boxes
         │       ├── Golden_RTL
         │           ├── configs
         │           ├── design
