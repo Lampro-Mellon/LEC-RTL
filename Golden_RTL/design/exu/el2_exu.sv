@@ -1,21 +1,7 @@
-// SPDX-License-Identifier: Apache-2.0
-// Copyright 2020 Western Digital Corporation or its affiliates.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-// http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-
 
 module el2_exu
 `include "parameter.sv"
+
   (
    input logic          clk,                                           // Top level clock
    input logic          rst_l,                                         // Reset
@@ -33,25 +19,21 @@ module el2_exu
    input logic [BTB_ADDR_HI:BTB_ADDR_LO] i0_predict_index_d,     // DEC predict index
    input logic [BTB_BTAG_SIZE-1:0] i0_predict_btag_d,               // DEC predict branch tag
 
-   input logic  [31:0]  lsu_result_m,                                  // Load result M-stage
-   input logic  [31:0]  lsu_nonblock_load_data,                        // nonblock load data
    input logic          dec_i0_rs1_en_d,                               // Qualify GPR RS1 data
    input logic          dec_i0_rs2_en_d,                               // Qualify GPR RS2 data
    input logic  [31:0]  gpr_i0_rs1_d,                                  // DEC data gpr
    input logic  [31:0]  gpr_i0_rs2_d,                                  // DEC data gpr
    input logic  [31:0]  dec_i0_immed_d,                                // DEC data immediate
-   input logic  [31:0]  dec_i0_result_r,                               // DEC result in R-stage
+   input logic  [31:0]  dec_i0_rs1_bypass_data_d,                      // DEC bypass data
+   input logic  [31:0]  dec_i0_rs2_bypass_data_d,                      // DEC bypass data
    input logic  [12:1]  dec_i0_br_immed_d,                             // Branch immediate
    input logic          dec_i0_alu_decode_d,                           // Valid to X-stage ALU
-   input logic          dec_i0_branch_d,                               // Branch in D-stage
    input logic          dec_i0_select_pc_d,                            // PC select to RS1
    input logic  [31:1]  dec_i0_pc_d,                                   // Instruction PC
-   input logic  [3:0]   dec_i0_rs1_bypass_en_d,                        // DEC bypass select  1 - X-stage, 0 - dec bypass data
-   input logic  [3:0]   dec_i0_rs2_bypass_en_d,                        // DEC bypass select  1 - X-stage, 0 - dec bypass data
-   input logic          dec_csr_ren_d,                                 // CSR read select
-   input logic  [31:0]  dec_csr_rddata_d,                              // CSR read data
+   input logic  [1:0]   dec_i0_rs1_bypass_en_d,                        // DEC bypass select  1 - X-stage, 0 - dec bypass data
+   input logic  [1:0]   dec_i0_rs2_bypass_en_d,                        // DEC bypass select  1 - X-stage, 0 - dec bypass data
+   input logic          dec_csr_ren_d,                                 // Clear I0 RS1 primary
 
-   input logic          dec_qual_lsu_d,                                // LSU instruction at D.  Use to quiet LSU operands
    input el2_mul_pkt_t mul_p,                                         // DEC {valid, operand signs, low, operand bypass}
    input el2_div_pkt_t div_p,                                         // DEC {valid, unsigned, rem}
    input logic          dec_div_cancel,                                // Cancel the divide operation
@@ -106,16 +88,18 @@ module el2_exu
 
 
 
+   logic                       data_gate_en;
    logic [31:0]                i0_rs1_bypass_data_d;
    logic [31:0]                i0_rs2_bypass_data_d;
    logic                       i0_rs1_bypass_en_d;
    logic                       i0_rs2_bypass_en_d;
    logic [31:0]                i0_rs1_d,  i0_rs2_d;
-   logic [31:0]                muldiv_rs1_d;
+   logic [31:0]                muldiv_rs1_d, muldiv_rs2_d;
    logic [31:1]                pred_correct_npc_r;
    logic                       i0_pred_correct_upper_r;
+   logic [31:0]                csr_rs1_in_d;
    logic [31:1]                i0_flush_path_upper_r;
-   logic                       x_data_en, x_data_en_q1, x_data_en_q2, r_data_en, r_data_en_q2;
+   logic                       x_data_en, r_data_en;
    logic                       x_ctl_en,  r_ctl_en;
 
    logic [BHT_GHR_SIZE-1:0] ghr_d_ns, ghr_d;
@@ -129,6 +113,7 @@ module el2_exu
    el2_predict_pkt_t          final_predict_mp;
    el2_predict_pkt_t          i0_predict_newp_d;
 
+   logic                       flush_lower_ff;
    logic                       flush_in_d;
    logic [31:0]                alu_result_x;
 
@@ -146,7 +131,6 @@ module el2_exu
    logic [31:1]                i0_flush_path_x;
    el2_predict_pkt_t          i0_predict_p_x;
    logic                       i0_pred_correct_upper_x;
-   logic                       i0_branch_x;
 
    localparam PREDPIPESIZE = BTB_ADDR_HI-BTB_ADDR_LO+1+BHT_GHR_SIZE+BTB_BTAG_SIZE;
    logic [PREDPIPESIZE-1:0]    predpipe_d, predpipe_x, predpipe_r, final_predpipe_mp;
@@ -154,81 +138,92 @@ module el2_exu
 
 
 
-   rvdffpcie #(31)                       i_flush_path_x_ff    (.*, .clk(clk),        .en ( x_data_en     ),  .din ( i0_flush_path_d[31:1]         ),  .dout( i0_flush_path_x[31:1]      ) );
-   rvdffe #(32)                          i_csr_rs1_x_ff       (.*, .clk(clk),        .en ( x_data_en_q1  ),  .din ( i0_rs1_d[31:0]                ),  .dout( exu_csr_rs1_x[31:0]        ) );
-   rvdffppe #($bits(el2_predict_pkt_t)) i_predictpacket_x_ff (.*, .clk(clk),        .en ( x_data_en     ),  .din ( i0_predict_p_d                ),  .dout( i0_predict_p_x             ) );
-   rvdffe #(PREDPIPESIZE)                i_predpipe_x_ff      (.*, .clk(clk),        .en ( x_data_en_q2  ),  .din ( predpipe_d                    ),  .dout( predpipe_x                 ) );
-   rvdffe #(PREDPIPESIZE)                i_predpipe_r_ff      (.*, .clk(clk),        .en ( r_data_en_q2  ),  .din ( predpipe_x                    ),  .dout( predpipe_r                 ) );
+   rvdffe #(31)                         i_flush_path_x_ff    (.*, .en ( x_data_en     ),  .din( i0_flush_path_d[31:1]         ),  .dout( i0_flush_path_x[31:1]      ) );
+   rvdffe #(32)                         i_csr_rs1_x_ff       (.*, .en ( x_data_en     ),  .din( csr_rs1_in_d[31:0]            ),  .dout( exu_csr_rs1_x[31:0]        ) );
+   rvdffe #($bits(el2_predict_pkt_t))  i_predictpacket_x_ff (.*, .en ( x_data_en     ),  .din( i0_predict_p_d                ),  .dout( i0_predict_p_x             ) );
+   rvdffe #(PREDPIPESIZE)               i_predpipe_x_ff      (.*, .en ( x_data_en     ),  .din( predpipe_d                    ),  .dout( predpipe_x                 ) );
+   rvdffe #(PREDPIPESIZE)               i_predpipe_r_ff      (.*, .en ( r_data_en     ),  .din( predpipe_x                    ),  .dout( predpipe_r                 ) );
 
-   rvdffe #(4+BHT_GHR_SIZE)          i_x_ff               (.*, .clk(clk),        .en ( x_ctl_en      ),  .din ({i0_valid_d,i0_taken_d,i0_flush_upper_d,i0_pred_correct_upper_d,ghr_x_ns[BHT_GHR_SIZE-1:0]} ),
-                                                                                                            .dout({i0_valid_x,i0_taken_x,i0_flush_upper_x,i0_pred_correct_upper_x,ghr_x[BHT_GHR_SIZE-1:0]}    ) );
+   rvdffe #(4+BHT_GHR_SIZE)          i_x_ff               (.*, .en ( x_ctl_en      ),  .din ({i0_valid_d,i0_taken_d,i0_flush_upper_d,i0_pred_correct_upper_d,ghr_x_ns[BHT_GHR_SIZE-1:0]} ),
+                                                                                          .dout({i0_valid_x,i0_taken_x,i0_flush_upper_x,i0_pred_correct_upper_x,ghr_x[BHT_GHR_SIZE-1:0]}    ) );
 
-   rvdffppe #($bits(el2_predict_pkt_t)+1) i_r_ff0         (.*, .clk(clk),        .en ( r_ctl_en      ),  .din ({i0_pred_correct_upper_x, i0_predict_p_x}),
-                                                                                                          .dout({i0_pred_correct_upper_r, i0_pp_r       }) );
+   rvdffe #($bits(el2_predict_pkt_t)+7) i_r_ff0             (.*, .en ( r_ctl_en      ),  .din ({i0_predict_p_x             ,pred_correct_npc_x[6:1],i0_pred_correct_upper_x}),
+                                                                                          .dout({i0_pp_r                    ,pred_correct_npc_r[6:1],i0_pred_correct_upper_r}) );
 
-   rvdffpcie #(31)                      i_flush_r_ff         (.*, .clk(clk),        .en ( r_data_en     ),  .din ( i0_flush_path_x[31:1]         ),  .dout( i0_flush_path_upper_r[31:1]) );
-   rvdffpcie #(31)                      i_npc_r_ff           (.*, .clk(clk),        .en ( r_data_en     ),  .din ( pred_correct_npc_x[31:1]      ),  .dout( pred_correct_npc_r[31:1]   ) );
+   rvdffe #(56)                         i_r_ff1              (.*, .en ( r_data_en     ),  .din ({i0_flush_path_x[31:1]      ,pred_correct_npc_x[31:7]}),
+                                                                                          .dout({i0_flush_path_upper_r[31:1],pred_correct_npc_r[31:7]}) );
 
-   rvdffie #(BHT_GHR_SIZE+2,1)       i_misc_ff            (.*, .clk(clk),                                .din ({ghr_d_ns[BHT_GHR_SIZE-1:0], mul_p.valid, dec_i0_branch_d}),
-                                                                                                            .dout({ghr_d[BHT_GHR_SIZE-1:0]   , mul_valid_x, i0_branch_x}) );
+   if (BHT_SIZE==32 || BHT_SIZE==64)
+     begin
+       rvdffs #(BHT_GHR_SIZE+2)      i_data_gate_ff       (.*, .en( data_gate_en   ),  .din ({ghr_d_ns[BHT_GHR_SIZE-1:0],mul_p.valid,dec_tlu_flush_lower_r}),
+                                                                                          .dout({ghr_d[BHT_GHR_SIZE-1:0]   ,mul_valid_x,flush_lower_ff}       ) );
+     end
+   else
+     begin
+       rvdffe #(BHT_GHR_SIZE+2)      i_data_gate_ff       (.*, .en( data_gate_en   ),  .din ({ghr_d_ns[BHT_GHR_SIZE-1:0],mul_p.valid,dec_tlu_flush_lower_r}),
+                                                                                          .dout({ghr_d[BHT_GHR_SIZE-1:0]   ,mul_valid_x,flush_lower_ff}       ) );
+     end
 
 
 
 
+
+   assign data_gate_en             =  ( ghr_d_ns[BHT_GHR_SIZE-1:0] != ghr_d[BHT_GHR_SIZE-1:0]) |
+                                      ( mul_p.valid                   != mul_valid_x               ) |
+                                      ( dec_tlu_flush_lower_r         != flush_lower_ff            );
 
    assign predpipe_d[PREDPIPESIZE-1:0]
                                    = {i0_predict_fghr_d, i0_predict_index_d, i0_predict_btag_d};
 
 
-   assign i0_rs1_bypass_en_d       = dec_i0_rs1_bypass_en_d[0] | dec_i0_rs1_bypass_en_d[1] | dec_i0_rs1_bypass_en_d[2] | dec_i0_rs1_bypass_en_d[3];
-   assign i0_rs2_bypass_en_d       = dec_i0_rs2_bypass_en_d[0] | dec_i0_rs2_bypass_en_d[1] | dec_i0_rs2_bypass_en_d[2] | dec_i0_rs2_bypass_en_d[3];
+   assign i0_rs1_bypass_en_d       = dec_i0_rs1_bypass_en_d[0] | dec_i0_rs1_bypass_en_d[1];
+   assign i0_rs2_bypass_en_d       = dec_i0_rs2_bypass_en_d[0] | dec_i0_rs2_bypass_en_d[1];
 
-   assign i0_rs1_bypass_data_d[31:0]=({32{dec_i0_rs1_bypass_en_d[0]}} & dec_i0_result_r[31:0]       ) |
-                                     ({32{dec_i0_rs1_bypass_en_d[1]}} & lsu_result_m[31:0]          ) |
-                                     ({32{dec_i0_rs1_bypass_en_d[2]}} & exu_i0_result_x[31:0]       ) |
-                                     ({32{dec_i0_rs1_bypass_en_d[3]}} & lsu_nonblock_load_data[31:0]);
+   assign i0_rs1_bypass_data_d[31:0]=({32{dec_i0_rs1_bypass_en_d[0]}} & dec_i0_rs1_bypass_data_d[31:0]) |
+                                     ({32{dec_i0_rs1_bypass_en_d[1]}} & exu_i0_result_x[31:0]         );
 
-   assign i0_rs2_bypass_data_d[31:0]=({32{dec_i0_rs2_bypass_en_d[0]}} & dec_i0_result_r[31:0]       ) |
-                                     ({32{dec_i0_rs2_bypass_en_d[1]}} & lsu_result_m[31:0]          ) |
-                                     ({32{dec_i0_rs2_bypass_en_d[2]}} & exu_i0_result_x[31:0]       ) |
-                                     ({32{dec_i0_rs2_bypass_en_d[3]}} & lsu_nonblock_load_data[31:0]);
+   assign i0_rs2_bypass_data_d[31:0]=({32{dec_i0_rs2_bypass_en_d[0]}} & dec_i0_rs2_bypass_data_d[31:0]) |
+                                     ({32{dec_i0_rs2_bypass_en_d[1]}} & exu_i0_result_x[31:0]         );
 
 
-   assign i0_rs1_d[31:0]           = ({32{ i0_rs1_bypass_en_d                                           }}             & i0_rs1_bypass_data_d[31:0]) |
-                                     ({32{~i0_rs1_bypass_en_d &  dec_i0_select_pc_d                     }}             & {dec_i0_pc_d[31:1],1'b0}  ) |    // for jal's
-                                     ({32{~i0_rs1_bypass_en_d &  dec_debug_wdata_rs1_d                  }}             & dbg_cmd_wrdata[31:0]      ) |
-                                     ({32{~i0_rs1_bypass_en_d & ~dec_debug_wdata_rs1_d & dec_i0_rs1_en_d}}             & gpr_i0_rs1_d[31:0]        );
+   assign i0_rs1_d[31:0]           = ({32{ i0_rs1_bypass_en_d                                           }}           & i0_rs1_bypass_data_d[31:0]) |
+                                     ({32{~i0_rs1_bypass_en_d &  dec_i0_select_pc_d                     }}           & {dec_i0_pc_d[31:1],1'b0}  ) |    // for jal's
+                                     ({32{~i0_rs1_bypass_en_d &  dec_debug_wdata_rs1_d                  }}           & dbg_cmd_wrdata[31:0]      ) |
+                                     ({32{~i0_rs1_bypass_en_d & ~dec_debug_wdata_rs1_d & dec_i0_rs1_en_d}}           & gpr_i0_rs1_d[31:0]        );
 
-   assign i0_rs2_d[31:0]           = ({32{~i0_rs2_bypass_en_d & dec_i0_rs2_en_d}}                                      & gpr_i0_rs2_d[31:0]        ) |
-                                     ({32{~i0_rs2_bypass_en_d                  }}                                      & dec_i0_immed_d[31:0]      ) |
-                                     ({32{ i0_rs2_bypass_en_d                  }}                                      & i0_rs2_bypass_data_d[31:0]);
-
-
-   assign exu_lsu_rs1_d[31:0]      = ({32{~i0_rs1_bypass_en_d & ~dec_extint_stall & dec_i0_rs1_en_d & dec_qual_lsu_d}} & gpr_i0_rs1_d[31:0]        ) |
-                                     ({32{ i0_rs1_bypass_en_d & ~dec_extint_stall                   & dec_qual_lsu_d}} & i0_rs1_bypass_data_d[31:0]) |
-                                     ({32{                       dec_extint_stall                   & dec_qual_lsu_d}} & {dec_tlu_meihap[31:2],2'b0});
-
-   assign exu_lsu_rs2_d[31:0]      = ({32{~i0_rs2_bypass_en_d & ~dec_extint_stall & dec_i0_rs2_en_d & dec_qual_lsu_d}} & gpr_i0_rs2_d[31:0]        ) |
-                                     ({32{ i0_rs2_bypass_en_d & ~dec_extint_stall                   & dec_qual_lsu_d}} & i0_rs2_bypass_data_d[31:0]);
+   assign i0_rs2_d[31:0]           = ({32{~i0_rs2_bypass_en_d & dec_i0_rs2_en_d}}                                    & gpr_i0_rs2_d[31:0]        ) |
+                                     ({32{~i0_rs2_bypass_en_d                  }}                                    & dec_i0_immed_d[31:0]      ) |
+                                     ({32{ i0_rs2_bypass_en_d                  }}                                    & i0_rs2_bypass_data_d[31:0]);
 
 
-   assign muldiv_rs1_d[31:0]       = ({32{~i0_rs1_bypass_en_d & dec_i0_rs1_en_d}}                                      & gpr_i0_rs1_d[31:0]        ) |
-                                     ({32{ i0_rs1_bypass_en_d                  }}                                      & i0_rs1_bypass_data_d[31:0]);
+   assign exu_lsu_rs1_d[31:0]      = ({32{~i0_rs1_bypass_en_d & ~dec_extint_stall & dec_i0_rs1_en_d}} & gpr_i0_rs1_d[31:0]        ) |
+                                     ({32{ i0_rs1_bypass_en_d & ~dec_extint_stall                  }} & i0_rs1_bypass_data_d[31:0]) |
+                                     ({32{                       dec_extint_stall                  }} & {dec_tlu_meihap[31:2],2'b0});
 
+   assign exu_lsu_rs2_d[31:0]      = ({32{~i0_rs2_bypass_en_d & ~dec_extint_stall & dec_i0_rs2_en_d}} & gpr_i0_rs2_d[31:0]        ) |
+                                     ({32{ i0_rs2_bypass_en_d & ~dec_extint_stall                  }} & i0_rs2_bypass_data_d[31:0]);
+
+
+   assign muldiv_rs1_d[31:0]       = ({32{~i0_rs1_bypass_en_d & dec_i0_rs1_en_d}}                     & gpr_i0_rs1_d[31:0]        ) |
+                                     ({32{ i0_rs1_bypass_en_d                  }}                     & i0_rs1_bypass_data_d[31:0]);
+
+   assign muldiv_rs2_d[31:0]       = ({32{~i0_rs2_bypass_en_d & dec_i0_rs2_en_d}}                     & gpr_i0_rs2_d[31:0]        ) |
+                                     ({32{~i0_rs2_bypass_en_d                  }}                     & dec_i0_immed_d[31:0]      ) |
+                                     ({32{ i0_rs2_bypass_en_d                  }}                     & i0_rs2_bypass_data_d[31:0]);
+
+
+   assign csr_rs1_in_d[31:0]       = ( dec_csr_ren_d )  ?  i0_rs1_d[31:0]  :  exu_csr_rs1_x[31:0];
 
    assign x_data_en                =  dec_data_en[1];
-   assign x_data_en_q1             =  dec_data_en[1] & dec_csr_ren_d;
-   assign x_data_en_q2             =  dec_data_en[1] & dec_i0_branch_d;
    assign r_data_en                =  dec_data_en[0];
-   assign r_data_en_q2             =  dec_data_en[0] & i0_branch_x;
    assign x_ctl_en                 =  dec_ctl_en[1];
    assign r_ctl_en                 =  dec_ctl_en[0];
 
 
 
 
-   el2_exu_alu_ctl i_alu  (.*,
-                          .enable            ( x_data_en                   ),   // I
+   el2_exu_alu_ctl  i_alu  (.*,
+                          .enable            ( x_ctl_en                    ),   // I
                           .pp_in             ( i0_predict_newp_d           ),   // I
                           .valid_in          ( dec_i0_alu_decode_d         ),   // I
                           .flush_upper_x     ( i0_flush_upper_x            ),   // I
@@ -239,7 +234,6 @@ module el2_exu
                           .brimm_in          ( dec_i0_br_immed_d[12:1]     ),   // I
                           .ap                ( i0_ap                       ),   // I
                           .csr_ren_in        ( dec_csr_ren_d               ),   // I
-                          .csr_rddata_in     ( dec_csr_rddata_d[31:0]      ),   // I
                           .result_ff         ( alu_result_x[31:0]          ),   // O
                           .flush_upper_out   ( i0_flush_upper_d            ),   // O
                           .flush_final_out   ( exu_flush_final             ),   // O
@@ -250,19 +244,19 @@ module el2_exu
 
 
 
-   el2_exu_mul_ctl i_mul   (.*,
-                          .mul_p             ( mul_p              & {$bits(el2_mul_pkt_t){mul_p.valid}} ),   // I
-                          .rs1_in            ( muldiv_rs1_d[31:0] & {32{mul_p.valid}}                    ),   // I
-                          .rs2_in            ( i0_rs2_d[31:0]     & {32{mul_p.valid}}                    ),   // I
-                          .result_x          ( mul_result_x[31:0]                                        ));  // O
+   el2_exu_mul_ctl  i_mul   (.*,
+                          .mul_p             ( mul_p                       ),   // I
+                          .rs1_in            ( muldiv_rs1_d[31:0]          ),   // I
+                          .rs2_in            ( muldiv_rs2_d[31:0]          ),   // I
+                          .result_x          ( mul_result_x[31:0]          ));  // O
 
 
 
-   el2_exu_div_ctl i_div   (.*,
+   el2_exu_div_ctl  i_div   (.*,
                           .cancel            ( dec_div_cancel              ),   // I
                           .dp                ( div_p                       ),   // I
                           .dividend          ( muldiv_rs1_d[31:0]          ),   // I
-                          .divisor           ( i0_rs2_d[31:0]              ),   // I
+                          .divisor           ( muldiv_rs2_d[31:0]          ),   // I
                           .finish_dly        ( exu_div_wren                ),   // O
                           .out               ( exu_div_result[31:0]        ));  // O
 
@@ -287,7 +281,7 @@ module el2_exu
    assign i0_valid_d               =  i0_predict_p_d.valid  & dec_i0_alu_decode_d & ~dec_tlu_flush_lower_r;
    assign i0_taken_d               = (i0_predict_p_d.ataken & dec_i0_alu_decode_d);
 
-if(BTB_ENABLE==1) begin
+
    // maintain GHR at D
    assign ghr_d_ns[BHT_GHR_SIZE-1:0]
                                    = ({BHT_GHR_SIZE{~dec_tlu_flush_lower_r &  i0_valid_d}} & {ghr_d[BHT_GHR_SIZE-2:0], i0_taken_d}) |
@@ -303,7 +297,7 @@ if(BTB_ENABLE==1) begin
    assign exu_i0_br_valid_r                                 =  i0_pp_r.valid;
    assign exu_i0_br_mp_r                                    =  i0_pp_r.misp;
    assign exu_i0_br_way_r                                   =  i0_pp_r.way;
-   assign exu_i0_br_hist_r[1:0]                             =  {2{i0_pp_r.valid}} & i0_pp_r.hist[1:0];
+   assign exu_i0_br_hist_r[1:0]                             =  i0_pp_r.hist[1:0];
    assign exu_i0_br_error_r                                 =  i0_pp_r.br_error;
    assign exu_i0_br_middle_r                                =  i0_pp_r.pc4 ^ i0_pp_r.boffset;
    assign exu_i0_br_start_error_r                           =  i0_pp_r.br_start_error;
@@ -319,7 +313,6 @@ if(BTB_ENABLE==1) begin
    assign after_flush_eghr[BHT_GHR_SIZE-1:0]             = (i0_flush_upper_x & ~dec_tlu_flush_lower_r)  ?  ghr_d[BHT_GHR_SIZE-1:0]  :  ghr_x[BHT_GHR_SIZE-1:0];
 
 
-   assign exu_mp_pkt.valid                                  =  final_predict_mp.valid;
    assign exu_mp_pkt.way                                    =  final_predict_mp.way;
    assign exu_mp_pkt.misp                                   =  final_predict_mp.misp;
    assign exu_mp_pkt.pcall                                  =  final_predict_mp.pcall;
@@ -337,30 +330,11 @@ if(BTB_ENABLE==1) begin
            exu_mp_btag[BTB_BTAG_SIZE-1:0]}               =  final_predpipe_mp[PREDPIPESIZE-BHT_GHR_SIZE-1:0];
 
    assign exu_mp_eghr[BHT_GHR_SIZE-1:0]                  =  final_predpipe_mp[PREDPIPESIZE-1:BTB_ADDR_HI-BTB_ADDR_LO+BTB_BTAG_SIZE+1]; // mp ghr for bht write
-end // if (BTB_ENABLE==1)
-else begin
-   assign ghr_d_ns = '0;
-   assign ghr_x_ns = '0;
-   assign exu_mp_pkt = '0;
-   assign exu_mp_eghr = '0;
-   assign exu_mp_fghr = '0;
-   assign exu_mp_index = '0;
-   assign exu_mp_btag = '0;
-   assign exu_i0_br_hist_r = '0;
-   assign exu_i0_br_error_r = '0;
-   assign exu_i0_br_start_error_r = '0;
-   assign exu_i0_br_index_r = '0;
-   assign exu_i0_br_valid_r = '0;
-   assign exu_i0_br_mp_r = '0;
-   assign exu_i0_br_middle_r = '0;
-   assign exu_i0_br_fghr_r = '0;
-   assign exu_i0_br_way_r = '0;
-end // else: !if(BTB_ENABLE==1)
 
-   assign exu_flush_path_final[31:1] = ( {31{ dec_tlu_flush_lower_r                   }} & dec_tlu_flush_path_r[31:1] ) |
-                                       ( {31{~dec_tlu_flush_lower_r & i0_flush_upper_d}} & i0_flush_path_d[31:1]      );
+   assign exu_flush_path_final[31:1] = (dec_tlu_flush_lower_r)    ?  dec_tlu_flush_path_r[31:1]  :  i0_flush_path_d[31:1];
 
-   assign exu_npc_r[31:1]            = (i0_pred_correct_upper_r)  ?  pred_correct_npc_r[31:1]    :  i0_flush_path_upper_r[31:1];
+   assign exu_npc_r[31:1]            = (i0_pred_correct_upper_r)  ?  pred_correct_npc_r[31:1]    :
+                                                                     i0_flush_path_upper_r[31:1];
 
 
 endmodule // el2_exu

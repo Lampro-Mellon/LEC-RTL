@@ -1,38 +1,7 @@
-// SPDX-License-Identifier: Apache-2.0
-// Copyright 2020 Western Digital Corporation or its affiliates.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-// http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-//********************************************************************************
-// $Id$
-//
-// Owner:
-// Function: AHB to AXI4 Bridge
-// Comments:
-//
-//********************************************************************************
+
 module ahb_to_axi4
-#(
-   TAG = 1,
-localparam DCCM_SADR = 32'hf0040000,
-localparam DCCM_SIZE = 10'h040,
-localparam ICCM_SADR = 32'hEE000000,
-localparam ICCM_SIZE = 10'h040,
-localparam DCCM_ENABLE = 1'h1,
-localparam ICCM_ENABLE = 4'h1,
-localparam PIC_BASE_ADDR = 32'hF00C0000,
-localparam PIC_SIZE = 9'h020
-)
-//   ,TAG  = 1)
+`include "parameter.sv"
+
 (
    input                   clk,
    input                   rst_l,
@@ -125,8 +94,8 @@ localparam PIC_SIZE = 9'h020
    // signals needed for the read data coming back from the core and to block any further commands as AHB is a blocking bus
    logic                    buf_rdata_en;
 
-   logic                    ahb_addr_clk_en, buf_rdata_clk_en;
-   logic                    bus_clk, ahb_addr_clk, buf_rdata_clk;
+   logic                    ahb_bus_addr_clk_en, buf_rdata_clk_en;
+   logic                    ahb_clk, ahb_addr_clk, buf_rdata_clk;
    // Command buffer is the holding station where we convert to AXI and send to core
    logic                    cmdbuf_wr_en, cmdbuf_rst;
    logic                    cmdbuf_full;
@@ -135,6 +104,8 @@ localparam PIC_SIZE = 9'h020
    logic [7:0]              cmdbuf_wstrb;
    logic [31:0]             cmdbuf_addr;
    logic [63:0]             cmdbuf_wdata;
+
+   logic                    bus_clk;
 
 // FSM to control the bus states and when to block the hready and load the command buffer
    always_comb begin
@@ -167,7 +138,7 @@ localparam PIC_SIZE = 9'h020
      endcase
    end // always_comb begin
 
-    rvdffs_fpga #($bits(state_t)) state_reg (.*, .din(buf_nxtstate), .dout({buf_state}), .en(buf_state_en), .clk(bus_clk), .clken(bus_clk_en), .rawclk(clk));
+    rvdffs #($bits(state_t)) state_reg (.*, .din(buf_nxtstate), .dout({buf_state}), .en(buf_state_en), .clk(ahb_clk));
 
    assign master_wstrb[7:0]   = ({8{ahb_hsize_q[2:0] == 3'b0}}  & (8'b1    << ahb_haddr_q[2:0])) |
                                 ({8{ahb_hsize_q[2:0] == 3'b1}}  & (8'b11   << ahb_haddr_q[2:0])) |
@@ -192,16 +163,24 @@ localparam PIC_SIZE = 9'h020
                              (ahb_hresp_q & ~ahb_hready_q);
 
    // Buffer signals - needed for the read data and ECC error response
-   rvdff_fpga  #(.WIDTH(64)) buf_rdata_ff     (.din(axi_rdata[63:0]),   .dout(buf_rdata[63:0]), .clk(buf_rdata_clk), .clken(buf_rdata_clk_en), .rawclk(clk), .*);
-   rvdff_fpga  #(.WIDTH(1))  buf_read_error_ff(.din(buf_read_error_in), .dout(buf_read_error),  .clk(bus_clk),       .clken(bus_clk_en),       .rawclk(clk), .*);          // buf_read_error will be high only one cycle
+   rvdff  #(.WIDTH(64)) buf_rdata_ff     (.din(axi_rdata[63:0]),  .dout(buf_rdata[63:0]), .clk(buf_rdata_clk), .*);
+   rvdff  #(.WIDTH(1))  buf_read_error_ff(.din(buf_read_error_in),  .dout(buf_read_error),  .clk(ahb_clk),       .*);          // buf_read_error will be high only one cycle
 
    // All the Master signals are captured before presenting it to the command buffer. We check for Hresp before sending it to the cmd buffer.
-   rvdff_fpga #(.WIDTH(1))  hresp_ff  (.din(ahb_hresp),          .dout(ahb_hresp_q),       .clk(bus_clk),      .clken(bus_clk_en),      .rawclk(clk), .*);
-   rvdff_fpga #(.WIDTH(1))  hready_ff (.din(ahb_hready),         .dout(ahb_hready_q),      .clk(bus_clk),      .clken(bus_clk_en),      .rawclk(clk), .*);
-   rvdff_fpga #(.WIDTH(2))  htrans_ff (.din(ahb_htrans_in[1:0]), .dout(ahb_htrans_q[1:0]), .clk(bus_clk),      .clken(bus_clk_en),      .rawclk(clk), .*);
-   rvdff_fpga #(.WIDTH(3))  hsize_ff  (.din(ahb_hsize[2:0]),     .dout(ahb_hsize_q[2:0]),  .clk(ahb_addr_clk), .clken(ahb_addr_clk_en), .rawclk(clk), .*);
-   rvdff_fpga #(.WIDTH(1))  hwrite_ff (.din(ahb_hwrite),         .dout(ahb_hwrite_q),      .clk(ahb_addr_clk), .clken(ahb_addr_clk_en), .rawclk(clk), .*);
-   rvdff_fpga #(.WIDTH(32)) haddr_ff  (.din(ahb_haddr[31:0]),    .dout(ahb_haddr_q[31:0]), .clk(ahb_addr_clk), .clken(ahb_addr_clk_en), .rawclk(clk), .*);
+   rvdff  #(.WIDTH(1))    hresp_ff  (.din(ahb_hresp),          .dout(ahb_hresp_q),       .clk(ahb_clk),      .*);
+   rvdff  #(.WIDTH(1))    hready_ff (.din(ahb_hready),         .dout(ahb_hready_q),      .clk(ahb_clk),      .*);
+   rvdff  #(.WIDTH(2))    htrans_ff (.din(ahb_htrans_in[1:0]), .dout(ahb_htrans_q[1:0]), .clk(ahb_clk),      .*);
+   rvdff  #(.WIDTH(3))    hsize_ff  (.din(ahb_hsize[2:0]),     .dout(ahb_hsize_q[2:0]),  .clk(ahb_addr_clk), .*);
+   rvdff  #(.WIDTH(1))    hwrite_ff (.din(ahb_hwrite),         .dout(ahb_hwrite_q),      .clk(ahb_addr_clk), .*);
+   rvdff  #(.WIDTH(32))   haddr_ff  (.din(ahb_haddr[31:0]),    .dout(ahb_haddr_q[31:0]), .clk(ahb_addr_clk), .*);
+
+   // Clock header logic
+   assign ahb_bus_addr_clk_en = bus_clk_en & (ahb_hready & ahb_htrans[1]);
+   assign buf_rdata_clk_en    = bus_clk_en & buf_rdata_en;
+
+   rvclkhdr ahb_cgc       (.en(bus_clk_en),          .l1clk(ahb_clk),       .*);
+   rvclkhdr ahb_addr_cgc  (.en(ahb_bus_addr_clk_en), .l1clk(ahb_addr_clk),  .*);
+   rvclkhdr buf_rdata_cgc (.en(buf_rdata_clk_en),    .l1clk(buf_rdata_clk), .*);
 
    // Address check  dccm
    rvrangecheck #(.CCM_SADR(DCCM_SADR),
@@ -236,12 +215,12 @@ localparam PIC_SIZE = 9'h020
    assign cmdbuf_rst         = (((axi_awvalid & axi_awready) | (axi_arvalid & axi_arready)) & ~cmdbuf_wr_en) | (ahb_hresp & ~cmdbuf_write);
    assign cmdbuf_full        = (cmdbuf_vld & ~((axi_awvalid & axi_awready) | (axi_arvalid & axi_arready)));
 
-   rvdffsc_fpga #(.WIDTH(1))  cmdbuf_vldff      (.din(1'b1),              .dout(cmdbuf_vld),         .en(cmdbuf_wr_en), .clear(cmdbuf_rst), .clk(bus_clk), .clken(bus_clk_en), .rawclk(clk), .*);
-   rvdffs_fpga  #(.WIDTH(1))  cmdbuf_writeff    (.din(ahb_hwrite_q),      .dout(cmdbuf_write),       .en(cmdbuf_wr_en),                     .clk(bus_clk), .clken(bus_clk_en), .rawclk(clk), .*);
-   rvdffs_fpga  #(.WIDTH(2))  cmdbuf_sizeff     (.din(ahb_hsize_q[1:0]),  .dout(cmdbuf_size[1:0]),   .en(cmdbuf_wr_en),                     .clk(bus_clk), .clken(bus_clk_en), .rawclk(clk), .*);
-   rvdffs_fpga  #(.WIDTH(8))  cmdbuf_wstrbff    (.din(master_wstrb[7:0]), .dout(cmdbuf_wstrb[7:0]),  .en(cmdbuf_wr_en),                     .clk(bus_clk), .clken(bus_clk_en), .rawclk(clk), .*);
-   rvdffe       #(.WIDTH(32)) cmdbuf_addrff     (.din(ahb_haddr_q[31:0]), .dout(cmdbuf_addr[31:0]),  .en(cmdbuf_wr_en & bus_clk_en),        .clk(clk), .*);
-   rvdffe       #(.WIDTH(64)) cmdbuf_wdataff    (.din(ahb_hwdata[63:0]),  .dout(cmdbuf_wdata[63:0]), .en(cmdbuf_wr_en & bus_clk_en),        .clk(clk), .*);
+   rvdffsc #(.WIDTH(1))   cmdbuf_vldff      (.din(1'b1),                .dout(cmdbuf_vld),          .en(cmdbuf_wr_en),   .clear(cmdbuf_rst),      .clk(bus_clk), .*);
+   rvdffs  #(.WIDTH(1))   cmdbuf_writeff    (.din(ahb_hwrite_q),        .dout(cmdbuf_write),        .en(cmdbuf_wr_en),   .clk(bus_clk), .*);
+   rvdffs  #(.WIDTH(2))   cmdbuf_sizeff     (.din(ahb_hsize_q[1:0]),    .dout(cmdbuf_size[1:0]),    .en(cmdbuf_wr_en),   .clk(bus_clk), .*);
+   rvdffs  #(.WIDTH(8))   cmdbuf_wstrbff    (.din(master_wstrb[7:0]),   .dout(cmdbuf_wstrb[7:0]),   .en(cmdbuf_wr_en),   .clk(bus_clk), .*);
+   rvdffe  #(.WIDTH(32))  cmdbuf_addrff     (.din(ahb_haddr_q[31:0]),   .dout(cmdbuf_addr[31:0]),   .en(cmdbuf_wr_en),   .clk(bus_clk), .*);
+   rvdffe  #(.WIDTH(64))  cmdbuf_wdataff    (.din(ahb_hwdata[63:0]),    .dout(cmdbuf_wdata[63:0]),  .en(cmdbuf_wr_en),   .clk(bus_clk), .*);
 
    // AXI Write Command Channel
    assign axi_awvalid           = cmdbuf_vld & cmdbuf_write;
@@ -270,22 +249,11 @@ localparam PIC_SIZE = 9'h020
    assign axi_rready            = 1'b1;
 
    // Clock header logic
-   assign ahb_addr_clk_en = bus_clk_en & (ahb_hready & ahb_htrans[1]);
-   assign buf_rdata_clk_en    = bus_clk_en & buf_rdata_en;
+   rvclkhdr bus_cgc        (.en(bus_clk_en),       .l1clk(bus_clk),       .*);
 
-`ifdef RV_FPGA_OPTIMIZE
-   assign bus_clk = 1'b0;
-   assign ahb_addr_clk = 1'b0;
-   assign buf_rdata_clk = 1'b0;
-`else
-   rvclkhdr bus_cgc       (.en(bus_clk_en),       .l1clk(bus_clk),       .*);
-   rvclkhdr ahb_addr_cgc  (.en(ahb_addr_clk_en),  .l1clk(ahb_addr_clk),  .*);
-   rvclkhdr buf_rdata_cgc (.en(buf_rdata_clk_en), .l1clk(buf_rdata_clk), .*);
-`endif
-
-`ifdef RV_ASSERT_ON
+`ifdef ASSERT_ON
    property ahb_error_protocol;
-      @(posedge bus_clk) (ahb_hready & ahb_hresp) |-> (~$past(ahb_hready) & $past(ahb_hresp));
+      @(posedge ahb_clk) (ahb_hready & ahb_hresp) |-> (~$past(ahb_hready) & $past(ahb_hresp));
    endproperty
    assert_ahb_error_protocol: assert property (ahb_error_protocol) else
       $display("Bus Error with hReady isn't preceded with Bus Error without hready");

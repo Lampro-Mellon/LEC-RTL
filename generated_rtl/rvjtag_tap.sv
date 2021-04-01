@@ -13,8 +13,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License
 
-module rvjtag_tap 
-`include "parameter.sv"(
+module rvjtag_tap //#(
+//parameter AWIDTH = 7
+//)
+`include "parameter.sv"
+(
 input               trst,
 input               tck,
 input               tms,
@@ -171,7 +174,6 @@ always_comb begin
                     endcase
                 end
     capture_dr: begin
-                    nsr[0] = 1'b0;
                     case(1)
                     dr_en[0]:   nsr = {{USER_DR_LENGTH-15{1'b0}}, idle, dmi_stat, abits, version};
                     dr_en[1]:   nsr = {{AWIDTH{1'b0}}, rd_data, rd_status};

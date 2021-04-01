@@ -1,42 +1,17 @@
-// SPDX-License-Identifier: Apache-2.0
-// Copyright 2020 Western Digital Corporation or its affiliates.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-// http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-
-//********************************************************************************
-// $Id$
-//
-//
-// Owner:
-// Function: Checks the memory map for the address
-// Comments:
-//
-//********************************************************************************
 
 module el2_lsu_addrcheck
 `include "parameter.sv"
-
 (
-   input logic          lsu_c2_m_clk,              // clock
-   input logic          rst_l,                     // reset
+   input logic          lsu_c2_m_clk,       // clock
+   input logic          rst_l,                       // reset
 
    input logic [31:0]   start_addr_d,              // start address for lsu
    input logic [31:0]   end_addr_d,                // end address for lsu
    input el2_lsu_pkt_t lsu_pkt_d,                 // packet in d
-   input logic [31:0]   dec_tlu_mrac_ff,           // CSR read
-   input logic [3:0]    rs1_region_d,              // address rs operand [31:28]
+   input logic [31:0]   dec_tlu_mrac_ff,             // CSR read
+   input logic [3:0]    rs1_region_d,
 
-   input logic [31:0]   rs1_d,                     // address rs operand
+   input logic [31:0]   rs1_d,
 
    output logic         is_sideeffects_m,          // is sideffects space
    output logic         addr_in_dccm_d,            // address in dccm
@@ -50,7 +25,7 @@ module el2_lsu_addrcheck
    output logic         fir_dccm_access_error_d,   // Fast interrupt dccm access error
    output logic         fir_nondccm_access_error_d,// Fast interrupt dccm access error
 
-   input  logic         scan_mode                  // Scan mode
+   input  logic         scan_mode
 );
 
 
@@ -116,7 +91,7 @@ module el2_lsu_addrcheck
    );
 
    assign start_addr_dccm_or_pic  = start_addr_in_dccm_region_d | start_addr_in_pic_region_d;
-   assign base_reg_dccm_or_pic    = ((rs1_region_d[3:0] == DCCM_REGION) & DCCM_ENABLE) | (rs1_region_d[3:0] == PIC_REGION);
+   assign base_reg_dccm_or_pic    = (rs1_region_d[3:0] == DCCM_REGION) | (rs1_region_d[3:0] == PIC_REGION);
    assign addr_in_dccm_d          = (start_addr_in_dccm_d & end_addr_in_dccm_d);
    assign addr_in_pic_d           = (start_addr_in_pic_d & end_addr_in_pic_d);
 
@@ -154,7 +129,7 @@ module el2_lsu_addrcheck
    assign regpred_access_fault_d  = (start_addr_dccm_or_pic ^ base_reg_dccm_or_pic);                   // 5. Region predication access fault: Base Address in DCCM/PIC and Final address in non-DCCM/non-PIC region or vice versa
    assign picm_access_fault_d     = (addr_in_pic_d & ((start_addr_d[1:0] != 2'b0) | ~lsu_pkt_d.word));                                               // 6. Ld/St access to picm are not word aligned or word size
 
-   if (DCCM_ENABLE & (DCCM_REGION == PIC_REGION)) begin
+   if (DCCM_REGION == PIC_REGION) begin
       assign unmapped_access_fault_d = ((start_addr_in_dccm_region_d & ~(start_addr_in_dccm_d | start_addr_in_pic_d)) |   // 0. Addr in dccm/pic region but not in dccm/pic offset
                                         (end_addr_in_dccm_region_d & ~(end_addr_in_dccm_d | end_addr_in_pic_d))       |   // 0. Addr in dccm/pic region but not in dccm/pic offset
                                         (start_addr_in_dccm_d & end_addr_in_pic_d)                                    |   // 0. DCCM -> PIC cross when DCCM/PIC in same region

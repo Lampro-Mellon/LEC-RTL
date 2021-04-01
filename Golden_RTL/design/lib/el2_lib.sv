@@ -1,6 +1,6 @@
 module el2_btb_tag_hash 
-`include "parameter.sv"
- (
+`include "parameter.sv" 
+(
                        input logic [BTB_ADDR_HI+BTB_BTAG_SIZE+BTB_BTAG_SIZE+BTB_BTAG_SIZE:BTB_ADDR_HI+1] pc,
                        output logic [BTB_BTAG_SIZE-1:0] hash
                        );

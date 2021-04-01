@@ -1,33 +1,12 @@
-// SPDX-License-Identifier: Apache-2.0
-// Copyright 2020 Western Digital Corporation or its affiliates.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-// http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-
-//********************************************************************************
-// $Id$
-//
-//
-// Owner:
-// Function: DEC Trigger Logic
-// Comments:
-//
-//********************************************************************************
 
 module el2_dec_trigger
-( input el2_trigger_pkt_t [3:0] trigger_pkt_any,           // Packet from tlu. 'select':0-pc,1-Opcode  'Execute' needs to be set for dec triggers to fire. 'match'-1 do mask, 0: full match
-   input logic [31:1]  dec_i0_pc_d,                          // i0 pc
+`include "parameter.sv"
+(
 
-   output logic [3:0] dec_i0_trigger_match_d                 // Trigger match
+   input el2_trigger_pkt_t [3:0] trigger_pkt_any,           // Packet from tlu. 'select':0-pc,1-Opcode  'Execute' needs to be set for dec triggers to fire. 'match'-1 do mask, 0: full match
+   input logic [31:1]  dec_i0_pc_d,                     // i0 pc
+
+   output logic [3:0] dec_i0_trigger_match_d
 );
 
    logic [3:0][31:0]  dec_i0_match_data;

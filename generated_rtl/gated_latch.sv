@@ -1,4 +1,3 @@
-
 module gated_latch
   (
    input logic SE, EN, CK,

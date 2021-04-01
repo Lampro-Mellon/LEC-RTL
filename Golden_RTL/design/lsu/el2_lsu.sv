@@ -1,29 +1,3 @@
-// SPDX-License-Identifier: Apache-2.0
-// Copyright 2020 Western Digital Corporation or its affiliates.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-// http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-
-//********************************************************************************
-// $Id$
-//
-//
-// Function: Top level file for load store unit
-// Comments:
-//
-//
-// DC1 -> DC2 -> DC3 -> DC4 (Commit)
-//
-//********************************************************************************
 
 module el2_lsu
 `include "parameter.sv"
@@ -41,6 +15,7 @@ module el2_lsu
    input logic                             dec_tlu_sideeffect_posted_disable, // disable the posted sideeffect load store to the bus
    input logic                             dec_tlu_core_ecc_disable,          // disable the generation of the ecc
 
+
    input logic [31:0]                      exu_lsu_rs1_d,        // address rs operand
    input logic [31:0]                      exu_lsu_rs2_d,        // store data
    input logic [11:0]                      dec_lsu_offset_d,     // address offset operand
@@ -55,7 +30,6 @@ module el2_lsu
    output logic                            lsu_store_stall_any,   // This is for blocking stores in the decode
    output logic                            lsu_fastint_stall_any, // Stall the fastint in decode-1 stage
    output logic                            lsu_idle_any,          // lsu buffers are empty and no instruction in the pipeline. Doesn't include DMA
-   output logic                            lsu_active,            // Used to turn off top level clk
 
    output logic [31:1]                     lsu_fir_addr,        // fast interrupt address
    output logic [1:0]                      lsu_fir_error,       // Error during fast interrupt lookup
@@ -75,6 +49,7 @@ module el2_lsu
    output logic                               lsu_nonblock_load_data_error,   // non block load has an error
    output logic [LSU_NUM_NBLOAD_WIDTH-1:0] lsu_nonblock_load_data_tag,     // the tag of the non block load sending the data/error
    output logic [31:0]                        lsu_nonblock_load_data,         // Data of the non block load
+
 
    output logic                            lsu_pmu_load_external_m,        // PMU : Bus loads
    output logic                            lsu_pmu_store_external_m,       // PMU : Bus loads
@@ -172,12 +147,13 @@ module el2_lsu
    output logic [63:0]                     dccm_dma_rdata,      // lsu data for DMA dccm read
    output logic                            dccm_ready,          // lsu ready for DMA access
 
-   input logic                             scan_mode,           // scan mode
-   input logic                             clk,                 // Clock only while core active.  Through one clock header.  For flops with    second clock header built in.  Connected to ACTIVE_L2CLK.
-   input logic                             active_clk,          // Clock only while core active.  Through two clock headers. For flops without second clock header built in.
-   input logic                             rst_l                // reset, active low
+   input logic                             scan_mode,           // scan
+   input logic                             clk,
+   input logic                             free_clk,
+   input logic                             rst_l
 
    );
+
 
    logic        lsu_dccm_rden_m;
    logic        lsu_dccm_rden_r;
@@ -220,7 +196,6 @@ module el2_lsu
 
    logic        addr_in_dccm_d, addr_in_dccm_m, addr_in_dccm_r;
    logic        addr_in_pic_d, addr_in_pic_m, addr_in_pic_r;
-   logic        ldst_dual_d, ldst_dual_m, ldst_dual_r;
    logic        addr_external_m;
 
    logic                          stbuf_reqvld_any;
@@ -246,6 +221,7 @@ module el2_lsu
    logic        lsu_bus_buffer_pend_any;
    logic        lsu_bus_buffer_empty_any;
    logic        lsu_bus_buffer_full_any;
+   logic        lsu_bus_idle_any;
    logic        lsu_busreq_m;
    logic [31:0] bus_read_data_m;
 
@@ -258,8 +234,6 @@ module el2_lsu
    logic [DCCM_ECC_WIDTH-1:0] dma_dccm_wdata_ecc_lo, dma_dccm_wdata_ecc_hi;
 
    // Clocks
-   logic        lsu_busm_clken;
-   logic        lsu_bus_obuf_c1_clken;
    logic        lsu_c1_m_clk, lsu_c1_r_clk;
    logic        lsu_c2_m_clk, lsu_c2_r_clk;
    logic        lsu_store_c1_m_clk, lsu_store_c1_r_clk;
@@ -286,10 +260,9 @@ module el2_lsu
    // There can't be any inpipe forwarding from non-dma packet to dma packet since they can be flushed so we can't have st in r when dma is in m
    assign dma_mem_tag_d[2:0]   = dma_mem_tag[2:0];
    assign ldst_nodma_mtor = (lsu_pkt_m.valid & ~lsu_pkt_m.dma & (addr_in_dccm_m | addr_in_pic_m) & lsu_pkt_m.store);
-
    assign dccm_ready = ~(dec_lsu_valid_raw_d | ldst_nodma_mtor | ld_single_ecc_error_r_ff);
 
-   assign dma_dccm_wen = dma_dccm_req & dma_mem_write & addr_in_dccm_d & dma_mem_sz[1];   // Perform DMA writes only for word/dword
+   assign dma_dccm_wen = dma_dccm_req & dma_mem_write & addr_in_dccm_d;
    assign dma_pic_wen  = dma_dccm_req & dma_mem_write & addr_in_pic_d;
    assign {dma_dccm_wdata_hi[31:0], dma_dccm_wdata_lo[31:0]} = dma_mem_wdata[63:0] >> {dma_mem_addr[2:0], 3'b000};   // Shift the dma data to lower bits to make it consistent to lsu stores
 
@@ -298,30 +271,22 @@ module el2_lsu
    assign flush_m_up = dec_tlu_flush_lower_r;
    assign flush_r    = dec_tlu_i0_kill_writeb_r;
 
-   // lsu idle
    // lsu halt idle. This is used for entering the halt mode. Also, DMA accesses are allowed during fence.
    // Indicates non-idle if there is a instruction valid in d-r or read/write buffers are non-empty since they can come with error
    // Store buffer now have only non-dma dccm stores
    // stbuf_empty not needed since it has only dccm stores
    assign lsu_idle_any = ~((lsu_pkt_m.valid & ~lsu_pkt_m.dma) |
                            (lsu_pkt_r.valid & ~lsu_pkt_r.dma)) &
-                           lsu_bus_buffer_empty_any;
-
-   assign lsu_active = (lsu_pkt_m.valid | lsu_pkt_r.valid | ld_single_ecc_error_r_ff) | ~lsu_bus_buffer_empty_any;  // This includes DMA. Used for gating top clock
+                           lsu_bus_buffer_empty_any & lsu_bus_idle_any;
 
    // Instantiate the store buffer
-   assign store_stbuf_reqvld_r = lsu_pkt_r.valid & lsu_pkt_r.store & addr_in_dccm_r & ~flush_r & (~lsu_pkt_r.dma | ((lsu_pkt_r.by | lsu_pkt_r.half) & ~lsu_double_ecc_error_r));
+   assign store_stbuf_reqvld_r = lsu_pkt_r.valid & lsu_pkt_r.store & addr_in_dccm_r & ~flush_r & ~lsu_pkt_r.dma;
 
    // Disable Forwarding for now
    assign lsu_cmpen_m = lsu_pkt_m.valid & (lsu_pkt_m.load | lsu_pkt_m.store) & (addr_in_dccm_m | addr_in_pic_m);
 
    // Bus signals
    assign lsu_busreq_m = lsu_pkt_m.valid & ((lsu_pkt_m.load | lsu_pkt_m.store) & addr_external_m) & ~flush_m_up & ~lsu_exc_m & ~lsu_pkt_m.fast_int;
-
-   // Dual signals
-   assign ldst_dual_d  = (lsu_addr_d[2] != end_addr_d[2]);
-   assign ldst_dual_m  = (lsu_addr_m[2] != end_addr_m[2]);
-   assign ldst_dual_r  = (lsu_addr_r[2] != end_addr_r[2]);
 
    // PMU signals
    assign lsu_pmu_misaligned_m     = lsu_pkt_m.valid & ((lsu_pkt_m.half & lsu_addr_m[0]) | (lsu_pkt_m.word & (|lsu_addr_m[1:0])));
@@ -365,24 +330,18 @@ module el2_lsu
 
    // Bus interface
    el2_lsu_bus_intf bus_intf (
-      .lsu_addr_m(lsu_addr_m[31:0] & {32{addr_external_m & lsu_pkt_m.valid}}),
-      .lsu_addr_r(lsu_addr_r[31:0] & {32{lsu_busreq_r}}),
-
-      .end_addr_m(end_addr_m[31:0] & {32{addr_external_m & lsu_pkt_m.valid}}),
-      .end_addr_r(end_addr_r[31:0] & {32{lsu_busreq_r}}),
-
-      .store_data_r(store_data_r[31:0] & {32{lsu_busreq_r}}),
       .*
    );
 
    //Flops
    rvdff #(3) dma_mem_tag_mff     (.*, .din(dma_mem_tag_d[2:0]), .dout(dma_mem_tag_m[2:0]), .clk(lsu_c1_m_clk));
+
    rvdff #(2) lsu_raw_fwd_r_ff    (.*, .din({lsu_raw_fwd_hi_m, lsu_raw_fwd_lo_m}),     .dout({lsu_raw_fwd_hi_r, lsu_raw_fwd_lo_r}),     .clk(lsu_c2_r_clk));
 
-`ifdef RV_ASSERT_ON
+
+`ifdef ASSERT_ON
    logic [1:0] store_data_bypass_sel;
    assign store_data_bypass_sel[1:0] =  {lsu_p.store_data_bypass_d, lsu_p.store_data_bypass_m};
-
    property exception_no_lsu_flush;
       @(posedge clk)  disable iff(~rst_l) lsu_lsc_ctl.lsu_error_pkt_m.exc_valid |-> ##[1:2] (flush_r );
    endproperty

@@ -1,30 +1,11 @@
-// SPDX-License-Identifier: Apache-2.0
-// Copyright 2020 Western Digital Corporation or its affiliates.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-// http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-
-//********************************************************************************
-// el2_ifu_ifc_ctl.sv
-// Function: Fetch pipe control
-//
-// Comments:
-//********************************************************************************
 
 module el2_ifu_ifc_ctl
 `include "parameter.sv"
+
   (
-   input logic clk,                         // Clock only while core active.  Through one clock header.  For flops with    second clock header built in.  Connected to ACTIVE_L2CLK.
-   input logic free_l2clk,                  // Clock always.                  Through one clock header.  For flops with    second header built in.
+   input logic clk,
+   input logic free_clk,
+   input logic active_clk,
 
    input logic rst_l, // reset enable, from core pin
    input logic scan_mode, // scan
@@ -72,7 +53,7 @@ module el2_ifu_ifc_ctl
 
    logic     fb_full_f_ns, fb_full_f;
    logic     fb_right, fb_right2, fb_left, wfm, idle;
-   logic     sel_last_addr_bf, sel_next_addr_bf;
+   logic     sel_last_addr_bf, sel_btb_addr_bf, sel_next_addr_bf;
    logic     miss_f, miss_a;
    logic     flush_fb, dma_iccm_stall_any_f;
    logic     mb_empty_mod, goto_idle, leave_idle;
@@ -91,15 +72,13 @@ module el2_ifu_ifc_ctl
    logic     dma_stall;
    assign dma_stall = ic_dma_active | dma_iccm_stall_any_f;
 
-
+   rvdff #(2) ran_ff (.*, .clk(free_clk), .din({dma_iccm_stall_any, miss_f}), .dout({dma_iccm_stall_any_f, miss_a}));
 
    // Fetch address mux
    // - flush
    // - Miss *or* flush during WFM (icache miss buffer is blocking)
    // - Sequential
 
-if(BTB_ENABLE==1) begin
-   logic sel_btb_addr_bf;
 
    assign sel_last_addr_bf = ~exu_flush_final & (~ifc_fetch_req_f | ~ic_hit_f);
    assign sel_btb_addr_bf  = ~exu_flush_final & ifc_fetch_req_f & ifu_bp_hit_taken_f & ic_hit_f;
@@ -112,17 +91,6 @@ if(BTB_ENABLE==1) begin
                   ({31{sel_next_addr_bf}} & {fetch_addr_next[31:1]})); // SEQ path
 
 
-end // if (BTB_ENABLE=1)
-   else begin
-   assign sel_last_addr_bf = ~exu_flush_final & (~ifc_fetch_req_f | ~ic_hit_f);
-   assign sel_next_addr_bf = ~exu_flush_final & ifc_fetch_req_f & ic_hit_f;
-
-
-   assign fetch_addr_bf[31:1] = ( ({31{exu_flush_final}} &  exu_flush_path_final[31:1]) | // FLUSH path
-                  ({31{sel_last_addr_bf}} & ifc_fetch_addr_f[31:1]) | // MISS path
-                  ({31{sel_next_addr_bf}} & {fetch_addr_next[31:1]})); // SEQ path
-
-end
    assign fetch_addr_next[31:1] = {({ifc_fetch_addr_f[31:2]} + 31'b1), fetch_addr_next_1 };
    assign line_wrap = (fetch_addr_next[ICACHE_TAG_INDEX_LO] ^ ifc_fetch_addr_f[ICACHE_TAG_INDEX_LO]);
 
@@ -195,10 +163,8 @@ end
    assign idle     = state      == IDLE  ;
    assign wfm      = state      == WFM   ;
 
-   rvdffie #(10) fbwrite_ff (.*, .clk(free_l2clk),
-                          .din( {dma_iccm_stall_any, miss_f, ifc_fetch_req_bf, next_state[1:0], fb_full_f_ns, fb_write_ns[3:0]}),
-                          .dout({dma_iccm_stall_any_f, miss_a, ifc_fetch_req_f, //9
-				 state[1:0], fb_full_f, fb_write_f[3:0]})); //6
+   rvdff #(2) fsm_ff (.*, .clk(active_clk), .din({next_state[1:0]}), .dout({state[1:0]}));
+   rvdff #(5) fbwrite_ff (.*, .clk(active_clk), .din({fb_full_f_ns, fb_write_ns[3:0]}), .dout({fb_full_f, fb_write_f[3:0]}));
 
    assign ifu_pmu_fetch_stall = wfm |
                 (ifc_fetch_req_bf_raw &
@@ -206,10 +172,11 @@ end
                   dma_stall));
 
 
+   rvdff #(1) req_ff (.*, .clk(active_clk), .din(ifc_fetch_req_bf), .dout(ifc_fetch_req_f));
 
    assign ifc_fetch_addr_bf[31:1] = fetch_addr_bf[31:1];
 
-   rvdffpcie #(31) faddrf1_ff  (.*, .en(fetch_bf_en), .din(fetch_addr_bf[31:1]), .dout(ifc_fetch_addr_f[31:1]));
+   rvdffe #(31) faddrf1_ff  (.*, .en(fetch_bf_en), .din(fetch_addr_bf[31:1]), .dout(ifc_fetch_addr_f[31:1]));
 
 
  if (ICCM_ENABLE)  begin
