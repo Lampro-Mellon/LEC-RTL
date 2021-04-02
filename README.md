@@ -7,7 +7,7 @@ This repository contains the EL2 SweRV Core, Quasar Core design in RTL, and the 
     ├── verif
         ├── LEC
         │    ├── LEC_RTL
-        │       ├── Imp_BB_RTL                       # Quasar wrapper Black Boxes
+        │       ├── Imp_BB_RTL                   # Quasar wrapper Black Boxes
         │       ├── Golden_RTL
         │           ├── configs
         │           ├── design
